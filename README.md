@@ -34,7 +34,42 @@ php artisan migrate
 
 ## Filament admin
 
-Filament v3/v4/v5 admin resources land in v1.1. v1.0 is headless.
+As of **v1.1**, the package ships Filament admin resources for Filament **v3, v4, and v5**.
+Register the version-dispatching plugin on your panel — it resolves the correct
+resource set from the installed Filament major automatically:
+
+```php
+use Filament\Panel;
+use Kurt\Modules\Events\Filament\EventsPlugin;
+
+public function panel(Panel $panel): Panel
+{
+    return $panel
+        // ...
+        ->plugin(EventsPlugin::make());
+}
+```
+
+Eight resources are registered under an **Events** navigation group:
+
+| Resource | Purpose |
+|---|---|
+| `EventResource` | Events — translatable title/description, status & visibility, schedule, category, capacity. Full CRUD. |
+| `TicketTypeResource` | Ticket types — translatable name, mode (open/application/RSVP), price (minor units), capacity, sold count. Full CRUD. |
+| `OrderResource` | Orders — read-mostly; status/buyer/total, "Request refund" row action. |
+| `ApplicationResource` | Application review queue — approve / reject (with reason) row actions, defaults to pending. |
+| `DiscountCodeResource` | Discount codes — kind (percent/flat), scope, amount, usage limits, validity window. Full CRUD. |
+| `DocumentVerificationResource` | Document review queue — verify / reject row actions, defaults to pending. |
+| `RefundResource` | Refunds — read-mostly; mark processed / mark failed row actions, defaults to pending. |
+| `WaitlistResource` | Waitlist — read-only diagnostic table. |
+
+Row actions on the read-mostly/queue resources delegate to the
+`Kurt\Modules\Events\Support\Events` facade (`approve`, `reject`,
+`requestRefund`, `markRefundProcessed`, `markRefundFailed`), so admin decisions
+fire the same domain events your application already listens to.
+
+Translatable fields render as per-locale tabs (`en`, `tr` by default) — no extra
+Filament plugin dependency required.
 
 ## License
 
