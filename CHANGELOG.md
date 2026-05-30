@@ -4,6 +4,18 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-30
+
+### Added
+- Filament admin resources for Filament **v3, v4, and v5** (parallel resource sets under `src/Filament/V{3,4,5}/`).
+- Version-dispatching `Kurt\Modules\Events\Filament\EventsPlugin::make()` facade — register on a panel and it resolves the correct resource set from the installed Filament major.
+- Eight resources: `EventResource`, `TicketTypeResource`, `OrderResource`, `ApplicationResource`, `DiscountCodeResource`, `DocumentVerificationResource`, `RefundResource`, `WaitlistResource`, grouped under an "Events" navigation group.
+  - Translatable Event/TicketType fields via per-locale tabs (no extra Filament plugin dependency).
+  - Read-mostly Order/Refund and review queues (Application, DocumentVerification) expose row actions that delegate to the `Support\Events` facade (approve/reject, request refund, mark processed/failed, verify) so admin actions fire the usual domain events.
+  - Waitlist is a read-only diagnostic table.
+- Per-Filament-version PHPStan configs (`phpstan-filament-v{3,4,5}.neon`) and a Filament axis in the CI matrix (3.* / 4.* / 5.*), with the per-major config selected per cell.
+- Filament resource smoke tests under `tests/Feature/Filament/V{3,4,5}/`, guarded on the installed Filament major.
+
 ## [1.0.1] - 2026-05-30
 
 ### Fixed
