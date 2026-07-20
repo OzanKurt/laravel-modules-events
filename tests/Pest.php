@@ -5,9 +5,31 @@ declare(strict_types=1);
 use Filament\Forms\Form;
 use Filament\Schemas\Schema;
 use Filament\Tables\Table;
+use Kurt\Modules\Events\Catalog\Enums\OrganizerRole;
+use Kurt\Modules\Events\Catalog\Models\Event;
+use Kurt\Modules\Events\Tests\ApiTestCase;
+use Kurt\Modules\Events\Tests\Stubs\StubUser;
 use Kurt\Modules\Events\Tests\TestCase;
 
 pest()->extend(TestCase::class)->in('Feature');
+
+// HTTP API tests need the module in `api` mode at boot so the REST routes are
+// registered. They live in their own tests/Http tree (a sibling of Feature) so
+// the api-mode ApiTestCase never overlaps the headless base TestCase.
+pest()->extend(ApiTestCase::class)->in('Http');
+
+if (! function_exists('organizerOf')) {
+    /**
+     * Create a fresh user and attach them to an event as an organizer.
+     */
+    function organizerOf(Event $event, OrganizerRole $role = OrganizerRole::Owner): StubUser
+    {
+        $user = StubUser::create(['email' => uniqid('org').'@x.com']);
+        $event->organizers()->create(['user_id' => $user->id, 'role' => $role]);
+
+        return $user;
+    }
+}
 
 /*
 |--------------------------------------------------------------------------

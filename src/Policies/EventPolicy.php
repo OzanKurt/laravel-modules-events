@@ -42,6 +42,25 @@ final class EventPolicy
         return Gate::forUser($user)->allows('canManageEventApprovals');
     }
 
+    /**
+     * Scan tickets / attendees at the door. Any organizer role (owner, manager
+     * or the door-scanner role) may check attendees in, as may platform staff.
+     */
+    public function checkIn(Authenticatable $user, Event $event): bool
+    {
+        return $this->hasOrganizerRole($user, $event, [OrganizerRole::Owner, OrganizerRole::Manager, OrganizerRole::Scanner])
+            || $this->isStaff($user);
+    }
+
+    /**
+     * View the full attendee roster for an event (organizer/staff only).
+     */
+    public function viewAttendees(Authenticatable $user, Event $event): bool
+    {
+        return $this->hasOrganizerRole($user, $event, [OrganizerRole::Owner, OrganizerRole::Manager, OrganizerRole::Scanner])
+            || $this->isStaff($user);
+    }
+
     private function isOrganizer(Authenticatable $user, Event $event): bool
     {
         return $event->organizers()->where('user_id', $user->getAuthIdentifier())->exists();
