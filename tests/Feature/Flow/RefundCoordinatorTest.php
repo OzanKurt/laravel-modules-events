@@ -62,6 +62,30 @@ it('markProcessed flips status, sets processor_reference, and updates order stat
     Event::assertDispatched(RefundProcessed::class);
 });
 
+it('markProcessed is idempotent: re-processing does not re-dispatch or re-recompute', function () {
+    Event::fake([RefundProcessed::class]);
+
+    $event = CatalogEvent::factory()->create();
+    $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 1_000]);
+    $user = StubUser::create(['email' => 'u@x.com']);
+
+    $refund = refundCoordinator()->request($order, $user, RefundReason::OrganizerInitiated);
+
+    refundCoordinator()->markProcessed($refund, 'pi_first');
+    $processedAt = $refund->fresh()->processed_at;
+
+    // Second call must be a no-op.
+    refundCoordinator()->markProcessed($refund->fresh(), 'pi_second');
+
+    $refund->refresh();
+    expect($refund->status)->toBe(RefundStatus::Processed);
+    expect($refund->processor_reference)->toBe('pi_first');
+    expect($refund->processed_at?->toIso8601String())->toBe($processedAt?->toIso8601String());
+    expect($order->fresh()->status)->toBe(OrderStatus::Refunded);
+
+    Event::assertDispatchedTimes(RefundProcessed::class, 1);
+});
+
 it('partial refund leaves the order in PartiallyRefunded', function () {
     $event = CatalogEvent::factory()->create();
     $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 1_000]);

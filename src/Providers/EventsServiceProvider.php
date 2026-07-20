@@ -25,6 +25,8 @@ use Kurt\Modules\Events\Console\Commands\PruneQueueCommand;
 use Kurt\Modules\Events\Console\Commands\ReleaseQueueCommand;
 use Kurt\Modules\Events\Eligibility\Engine\RequirementEngine;
 use Kurt\Modules\Events\Flow\Models\Refund;
+use Kurt\Modules\Events\Flow\Models\SaleQueueEntry;
+use Kurt\Modules\Events\Flow\Models\WaitlistEntry;
 use Kurt\Modules\Events\Flow\Support\AuditLogWriter;
 use Kurt\Modules\Events\Flow\Support\GdprAnonymizer;
 use Kurt\Modules\Events\Flow\Support\GdprExporter;
@@ -37,8 +39,10 @@ use Kurt\Modules\Events\Flow\Support\WaitlistPromoter;
 use Kurt\Modules\Events\Policies\ApplicationPolicy;
 use Kurt\Modules\Events\Policies\EventPolicy;
 use Kurt\Modules\Events\Policies\OrderPolicy;
+use Kurt\Modules\Events\Policies\QueuePolicy;
 use Kurt\Modules\Events\Policies\RefundPolicy;
 use Kurt\Modules\Events\Policies\TicketTypePolicy;
+use Kurt\Modules\Events\Policies\WaitlistPolicy;
 use Kurt\Modules\Events\Support\Events as EventsService;
 use Kurt\Modules\Events\Ticketing\Models\Order;
 use Kurt\Modules\Events\Ticketing\Models\Ticket;
@@ -112,6 +116,8 @@ final class EventsServiceProvider extends PackageServiceProvider
         $gate->policy(Order::class, OrderPolicy::class);
         $gate->policy(Application::class, ApplicationPolicy::class);
         $gate->policy(Refund::class, RefundPolicy::class);
+        $gate->policy(SaleQueueEntry::class, QueuePolicy::class);
+        $gate->policy(WaitlistEntry::class, WaitlistPolicy::class);
 
         if ($this->app->runningInConsole() && (bool) config('events.scheduler.enabled', true)) {
             $this->app->booted(function () {

@@ -44,7 +44,6 @@ use Kurt\Modules\Events\Flow\Support\SponsorCoordinator;
 use Kurt\Modules\Events\Ticketing\Enums\OrderStatus;
 use Kurt\Modules\Events\Ticketing\Enums\TicketStatus;
 use Kurt\Modules\Events\Ticketing\Events\OrderCreated;
-use Kurt\Modules\Events\Ticketing\Events\OrderPaid;
 use Kurt\Modules\Events\Ticketing\Events\ReferralAttributionRecorded;
 use Kurt\Modules\Events\Ticketing\Events\TicketCheckedIn;
 use Kurt\Modules\Events\Ticketing\Events\TicketIssued;
@@ -205,8 +204,11 @@ final class Events
                 ]);
             }
 
+            // Reserved capacity is tracked at the ticket-type level. The event-level
+            // tickets_sold_count is the count of *issued* tickets and is maintained
+            // solely by TicketObserver when tickets are created/cancelled, so it is
+            // deliberately not incremented here at reservation time.
             $type->increment('sold_count', $quantity);
-            $event->increment('tickets_sold_count', $quantity);
 
             OrderCreated::dispatch($order);
 
@@ -243,7 +245,8 @@ final class Events
         }
 
         $order->forceFill(['assignment_completed_at' => now()])->save();
-        OrderPaid::dispatch($order);
+        // OrderPaid is dispatched exactly once, by OrderObserver, when the order's
+        // status transitions to Paid (set above). Do not dispatch it here as well.
     }
 
     public function transferTicket(Ticket $ticket, Model $newHolder): Ticket

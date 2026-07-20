@@ -52,6 +52,13 @@ final class RefundCoordinator
 
     public function markProcessed(Refund $refund, string $processorReference): void
     {
+        // Idempotency guard: only a Pending refund can be processed. Re-processing an
+        // already-Processed (or Failed) refund would re-recompute order totals and
+        // re-dispatch RefundProcessed, so short-circuit here.
+        if ($refund->status !== RefundStatus::Pending) {
+            return;
+        }
+
         $refund->forceFill([
             'status' => RefundStatus::Processed,
             'processor_reference' => $processorReference,
