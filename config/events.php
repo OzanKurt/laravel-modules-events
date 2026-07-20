@@ -12,6 +12,17 @@ use Kurt\Modules\Events\Eligibility\Evaluators\GroupMembershipEvaluator;
 return [
     'currency' => env('EVENTS_DEFAULT_CURRENCY', 'USD'),
 
+    // Out-of-the-box REST API, built on the Core API kit. Safe-by-default:
+    // in `headless` mode nothing is registered. Set EVENTS_HTTP_MODE=api
+    // (or `ui`) to expose the JSON endpoints in routes/api.php.
+    'http' => [
+        'mode' => env('EVENTS_HTTP_MODE', 'headless'),
+        'prefix' => 'api/events',
+        'middleware' => ['api'],
+        'auth_middleware' => ['auth'],
+        'rate_limit' => '60,1',
+    ],
+
     'queue' => [
         'enabled' => true,
         'active_concurrency' => 100,

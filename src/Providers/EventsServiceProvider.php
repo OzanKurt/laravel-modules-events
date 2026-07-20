@@ -136,6 +136,11 @@ final class EventsServiceProvider extends PackageServiceProvider
         $gate->policy(SaleQueueEntry::class, QueuePolicy::class);
         $gate->policy(WaitlistEntry::class, WaitlistPolicy::class);
 
+        // Register the out-of-the-box REST API. No-op in headless mode; when
+        // enabled (api/ui) this wires the throttle limiter and routes/api.php
+        // under the events.http config (prefix, middleware, rate limit).
+        $this->registerModuleApi(__DIR__.'/../../routes/api.php');
+
         if ($this->app->runningInConsole() && (bool) config('events.scheduler.enabled', true)) {
             $this->app->booted(function () {
                 /** @var Schedule $schedule */
