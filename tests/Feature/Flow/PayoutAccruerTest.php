@@ -45,6 +45,29 @@ it('splits 60/40 across two organizers on a paid order', function () {
     expect($byUser[$orgB->id]->share_basis_points)->toBe(4000);
 });
 
+it('is idempotent: accruing the same order twice yields one entry per organizer', function () {
+    $event = CatalogEvent::factory()->create();
+    $org = StubUser::create(['email' => 'once@x.com']);
+    EventOrganizer::factory()->create([
+        'event_id' => $event->id,
+        'user_id' => $org->id,
+        'commission_basis_points' => 5000,
+    ]);
+
+    $order = Order::factory()->create([
+        'event_id' => $event->id,
+        'total_minor' => 20_000,
+        'currency' => 'USD',
+    ]);
+
+    (new PayoutAccruer)->accrueFor($order);
+    (new PayoutAccruer)->accrueFor($order);
+
+    $entries = PayoutLedgerEntry::query()->where('order_id', $order->id)->get();
+    expect($entries)->toHaveCount(1);
+    expect($entries->first()->amount_minor)->toBe(10_000);
+});
+
 it('does not create a row for organizers without commission_basis_points', function () {
     $event = CatalogEvent::factory()->create();
     $org = StubUser::create(['email' => 'no-commission@x.com']);

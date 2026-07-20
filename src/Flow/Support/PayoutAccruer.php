@@ -22,14 +22,21 @@ final class PayoutAccruer
             $bps = (int) $organizer->commission_basis_points;
             $amount = intdiv($order->total_minor * $bps, 10_000);
 
-            PayoutLedgerEntry::create([
-                'order_id' => $order->id,
-                'organizer_user_id' => $organizer->user_id,
-                'share_basis_points' => $bps,
-                'amount_minor' => $amount,
-                'currency' => $order->currency,
-                'status' => PayoutStatus::Accrued,
-            ]);
+            // Idempotent: at most one ledger entry per (order, organizer). Accruing the
+            // same order twice (e.g. OrderObserver auto-accrual plus a manual call) must
+            // not create duplicate entries. Backed by a unique index on the table.
+            PayoutLedgerEntry::firstOrCreate(
+                [
+                    'order_id' => $order->id,
+                    'organizer_user_id' => $organizer->user_id,
+                ],
+                [
+                    'share_basis_points' => $bps,
+                    'amount_minor' => $amount,
+                    'currency' => $order->currency,
+                    'status' => PayoutStatus::Accrued,
+                ],
+            );
         }
     }
 }
