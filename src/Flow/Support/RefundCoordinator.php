@@ -132,11 +132,17 @@ final class RefundCoordinator
 
         $items = $order->items()->with('ticketType')->get();
 
-        return $items->every(fn (OrderItem $i) => $this->ticketTypeOf($i) !== null && ! $this->ticketTypeOf($i)->consumer_protection_exempt);
+        return $items->every(function (OrderItem $i): bool {
+            $type = $this->ticketTypeOf($i);
+
+            return $type !== null && ! $type->consumer_protection_exempt;
+        });
     }
 
     private function ticketTypeOf(OrderItem $item): ?TicketType
     {
-        return $item->ticketType()->first();
+        // Uses the eager-loaded relation (see the ->with('ticketType') above)
+        // instead of issuing a fresh query per call.
+        return $item->ticketType;
     }
 }
