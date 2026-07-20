@@ -8,6 +8,7 @@ use Kurt\Modules\Events\Flow\Enums\RefundReason;
 use Kurt\Modules\Events\Flow\Enums\RefundStatus;
 use Kurt\Modules\Events\Flow\Events\RefundProcessed;
 use Kurt\Modules\Events\Flow\Events\RefundRequested;
+use Kurt\Modules\Events\Flow\Exceptions\RefundNotAllowed;
 use Kurt\Modules\Events\Flow\Exceptions\SelfCancellationNotPermitted;
 use Kurt\Modules\Events\Flow\Support\RefundCoordinator;
 use Kurt\Modules\Events\Tests\Stubs\StubUser;
@@ -27,7 +28,7 @@ it('request creates a Pending refund and dispatches RefundRequested', function (
     Event::fake([RefundRequested::class]);
 
     $event = CatalogEvent::factory()->create();
-    $order = Order::factory()->create(['event_id' => $event->id, 'total_minor' => 2_500, 'currency' => 'USD']);
+    $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 2_500, 'currency' => 'USD']);
     $user = StubUser::create(['email' => 'u@x.com']);
 
     $refund = refundCoordinator()->request($order, $user, RefundReason::AttendeeRequest, 'because');
@@ -98,9 +99,61 @@ it('partial refund leaves the order in PartiallyRefunded', function () {
     expect($order->fresh()->status)->toBe(OrderStatus::PartiallyRefunded);
 });
 
+it('rejects a refund on an order that is not in a refundable state', function () {
+    $event = CatalogEvent::factory()->create();
+    $order = Order::factory()->create(['event_id' => $event->id, 'status' => OrderStatus::Pending, 'total_minor' => 1_000]);
+    $user = StubUser::create(['email' => 'u@x.com']);
+
+    expect(fn () => refundCoordinator()->request($order, $user, RefundReason::AttendeeRequest))
+        ->toThrow(RefundNotAllowed::class);
+});
+
+it('rejects a second refund once the order is fully refunded', function () {
+    $event = CatalogEvent::factory()->create();
+    $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 1_000]);
+    $user = StubUser::create(['email' => 'u@x.com']);
+
+    $first = refundCoordinator()->request($order, $user, RefundReason::AttendeeRequest, null, 1_000);
+    refundCoordinator()->markProcessed($first, 'pi_full');
+
+    expect(fn () => refundCoordinator()->request($order->fresh(), $user, RefundReason::AttendeeRequest, null, 1))
+        ->toThrow(RefundNotAllowed::class);
+});
+
+it('rejects a partial refund that exceeds the remaining balance', function () {
+    $event = CatalogEvent::factory()->create();
+    $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 1_000]);
+    $user = StubUser::create(['email' => 'u@x.com']);
+
+    $first = refundCoordinator()->request($order, $user, RefundReason::AttendeeRequest, null, 600);
+    refundCoordinator()->markProcessed($first, 'pi_600');
+
+    // Remaining balance is 400; requesting 500 must be rejected...
+    expect(fn () => refundCoordinator()->request($order->fresh(), $user, RefundReason::AttendeeRequest, null, 500))
+        ->toThrow(RefundNotAllowed::class);
+
+    // ...but exactly the remaining 400 is permitted.
+    $second = refundCoordinator()->request($order->fresh(), $user, RefundReason::AttendeeRequest, null, 400);
+    expect($second->status)->toBe(RefundStatus::Pending);
+});
+
+it('markFailed only transitions a Pending refund', function () {
+    $event = CatalogEvent::factory()->create();
+    $order = Order::factory()->paid()->create(['event_id' => $event->id, 'total_minor' => 1_000]);
+    $user = StubUser::create(['email' => 'u@x.com']);
+
+    $refund = refundCoordinator()->request($order, $user, RefundReason::OrganizerInitiated);
+    refundCoordinator()->markProcessed($refund, 'pi_1');
+
+    // Already Processed: markFailed must be a no-op, not re-open the refund.
+    refundCoordinator()->markFailed($refund->fresh(), 'late failure');
+
+    expect($refund->fresh()->status)->toBe(RefundStatus::Processed);
+});
+
 it('markFailed appends note text', function () {
     $event = CatalogEvent::factory()->create();
-    $order = Order::factory()->create(['event_id' => $event->id]);
+    $order = Order::factory()->paid()->create(['event_id' => $event->id]);
     $user = StubUser::create(['email' => 'u@x.com']);
 
     $refund = refundCoordinator()->request($order, $user, RefundReason::AttendeeRequest, 'first');

@@ -32,6 +32,7 @@ use Kurt\Modules\Events\Flow\Enums\WaitlistStatus;
 use Kurt\Modules\Events\Flow\Models\PayoutLedgerEntry;
 use Kurt\Modules\Events\Flow\Models\SaleQueueEntry;
 use Kurt\Modules\Events\Flow\Models\WaitlistEntry;
+use Kurt\Modules\Events\Flow\Support\ActiveQueueChallengeProvider;
 use Kurt\Modules\Events\Flow\Support\GdprAnonymizer;
 use Kurt\Modules\Events\Flow\Support\GdprExporter;
 use Kurt\Modules\Events\Flow\Support\PayoutAccruer;
@@ -69,6 +70,7 @@ function eventsService(): EventsService
         gdprExporter: new GdprExporter,
         gdprAnonymizer: new GdprAnonymizer(app('config')),
         announcements: new AnnouncementDispatcher(app('config')),
+        queueChallenge: new ActiveQueueChallengeProvider,
     );
 }
 
@@ -337,6 +339,13 @@ it('joinWaitlist + claimWaitlist reserves a ticket', function () {
 
     $entry = eventsService()->joinWaitlist($type, $user, 1);
     expect($entry->status)->toBe(WaitlistStatus::Waiting);
+
+    // The entry must be a live offer before it can be claimed.
+    $entry->forceFill([
+        'status' => WaitlistStatus::Offered,
+        'offered_at' => now(),
+        'claim_expires_at' => now()->addMinutes(10),
+    ])->save();
 
     $order = eventsService()->claimWaitlist($entry);
     $entry->refresh();

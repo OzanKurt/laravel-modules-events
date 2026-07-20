@@ -6,10 +6,12 @@ namespace Kurt\Modules\Events\Flow\Support;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Kurt\Modules\Events\Flow\Enums\RefundReason;
 use Kurt\Modules\Events\Flow\Enums\RefundStatus;
 use Kurt\Modules\Events\Flow\Events\RefundProcessed;
 use Kurt\Modules\Events\Flow\Events\RefundRequested;
+use Kurt\Modules\Events\Flow\Exceptions\RefundNotAllowed;
 use Kurt\Modules\Events\Flow\Exceptions\SelfCancellationNotPermitted;
 use Kurt\Modules\Events\Flow\Models\Refund;
 use Kurt\Modules\Events\Ticketing\Enums\OrderStatus;
@@ -25,29 +27,53 @@ final class RefundCoordinator
 
     public function request(Order|Ticket $target, Model $requester, RefundReason $reason, ?string $note = null, ?int $amountMinor = null): Refund
     {
-        if ($target instanceof Ticket) {
-            $orderItem = $target->orderItem()->firstOrFail();
-            $order = $orderItem->order()->firstOrFail();
-            $amount = $amountMinor ?? (int) $orderItem->unit_price_minor;
-        } else {
-            $order = $target;
-            $amount = $amountMinor ?? (int) $order->total_minor;
-        }
+        return DB::transaction(function () use ($target, $requester, $reason, $note, $amountMinor): Refund {
+            if ($target instanceof Ticket) {
+                $orderItem = $target->orderItem()->firstOrFail();
+                $order = $orderItem->order()->firstOrFail();
+                $amount = $amountMinor ?? (int) $orderItem->unit_price_minor;
+            } else {
+                $order = $target;
+                $amount = $amountMinor ?? (int) $order->total_minor;
+            }
 
-        $refund = Refund::create([
-            'order_id' => $order->id,
-            'ticket_id' => $target instanceof Ticket ? $target->id : null,
-            'amount_minor' => $amount,
-            'currency' => (string) $order->currency,
-            'reason' => $reason,
-            'reason_note' => $note,
-            'status' => RefundStatus::Pending,
-            'requested_by' => $requester->getKey(),
-        ]);
+            // Lock the order so the running total of prior refunds is read consistently
+            // against a concurrent refund request.
+            $order = Order::query()->lockForUpdate()->findOrFail($order->id);
 
-        RefundRequested::dispatch($refund);
+            if (! in_array($order->status, [OrderStatus::Paid, OrderStatus::PartiallyRefunded], true)) {
+                throw new RefundNotAllowed('Order is not in a refundable state: '.$order->status->value);
+            }
 
-        return $refund;
+            if ($amount <= 0) {
+                throw new RefundNotAllowed('Refund amount must be positive.');
+            }
+
+            // Over-refund guard: the sum of already-processed refunds plus this request
+            // may never exceed the order total.
+            $priorProcessed = (int) $order->refunds()
+                ->where('status', RefundStatus::Processed->value)
+                ->sum('amount_minor');
+
+            if ($priorProcessed + $amount > (int) $order->total_minor) {
+                throw new RefundNotAllowed('Refund exceeds the order total.');
+            }
+
+            $refund = Refund::create([
+                'order_id' => $order->id,
+                'ticket_id' => $target instanceof Ticket ? $target->id : null,
+                'amount_minor' => $amount,
+                'currency' => (string) $order->currency,
+                'reason' => $reason,
+                'reason_note' => $note,
+                'status' => RefundStatus::Pending,
+                'requested_by' => $requester->getKey(),
+            ]);
+
+            RefundRequested::dispatch($refund);
+
+            return $refund;
+        });
     }
 
     public function markProcessed(Refund $refund, string $processorReference): void
@@ -71,6 +97,13 @@ final class RefundCoordinator
 
     public function markFailed(Refund $refund, string $note): void
     {
+        // Only a Pending refund may transition to Failed. A refund that already reached a
+        // terminal state (Processed or Failed) must not be re-opened; short-circuit to
+        // mirror the idempotency guard in markProcessed().
+        if ($refund->status !== RefundStatus::Pending) {
+            return;
+        }
+
         $refund->forceFill([
             'status' => RefundStatus::Failed,
             'reason_note' => trim(($refund->reason_note ?? '').PHP_EOL.$note),

@@ -27,11 +27,13 @@ final class PruneQueueCommand extends Command
             ->get();
 
         $pruned = 0;
+        $expired = 0;
         foreach ($events as $event) {
             $pruned += $pruner->pruneFor($event);
+            $expired += $pruner->expireStaleActiveFor($event);
         }
 
-        $this->info("Pruned {$pruned} stale queue entries across {$events->count()} event(s).");
+        $this->info("Pruned {$pruned} stale queue entries and expired {$expired} active admission(s) across {$events->count()} event(s).");
 
         return self::SUCCESS;
     }

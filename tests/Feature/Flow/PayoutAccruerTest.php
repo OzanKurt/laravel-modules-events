@@ -5,10 +5,16 @@ declare(strict_types=1);
 use Kurt\Modules\Events\Catalog\Models\Event as CatalogEvent;
 use Kurt\Modules\Events\Catalog\Models\EventOrganizer;
 use Kurt\Modules\Events\Flow\Enums\PayoutStatus;
+use Kurt\Modules\Events\Flow\Enums\RefundReason;
 use Kurt\Modules\Events\Flow\Models\PayoutLedgerEntry;
 use Kurt\Modules\Events\Flow\Support\PayoutAccruer;
+use Kurt\Modules\Events\Flow\Support\RefundCoordinator;
 use Kurt\Modules\Events\Tests\Stubs\StubUser;
 use Kurt\Modules\Events\Ticketing\Models\Order;
+
+beforeEach(function () {
+    config()->set('kurtmodules.user_model', StubUser::class);
+});
 
 it('splits 60/40 across two organizers on a paid order', function () {
     $event = CatalogEvent::factory()->create();
@@ -104,4 +110,57 @@ it('carries the order currency through to ledger entries', function () {
     $entry = PayoutLedgerEntry::query()->where('order_id', $order->id)->firstOrFail();
     expect($entry->currency)->toBe('EUR');
     expect($entry->amount_minor)->toBe(25_000);
+});
+
+it('accrues on net revenue, not gross, when a refund is already processed', function () {
+    $event = CatalogEvent::factory()->create();
+    $org = StubUser::create(['email' => 'net@x.com']);
+    EventOrganizer::factory()->create([
+        'event_id' => $event->id,
+        'user_id' => $org->id,
+        'commission_basis_points' => 5000,
+    ]);
+    $buyer = StubUser::create(['email' => 'buyer@x.com']);
+    $order = Order::factory()->paid()->create([
+        'event_id' => $event->id, 'user_id' => $buyer->id,
+        'total_minor' => 100_000, 'currency' => 'USD',
+    ]);
+
+    // A 40k refund is processed before the payout is accrued.
+    $coordinator = new RefundCoordinator(app('config'));
+    $refund = $coordinator->request($order, $buyer, RefundReason::AttendeeRequest, null, 40_000);
+    $coordinator->markProcessed($refund, 'pi_ref');
+
+    (new PayoutAccruer)->accrueFor($order->fresh());
+
+    $entry = PayoutLedgerEntry::query()->where('order_id', $order->id)->firstOrFail();
+    // net = 60_000 → 50% = 30_000, never 50_000 on gross.
+    expect($entry->amount_minor)->toBe(30_000);
+});
+
+it('reduces an already-accrued payout after a refund is processed', function () {
+    $event = CatalogEvent::factory()->create();
+    $org = StubUser::create(['email' => 'reduce@x.com']);
+    EventOrganizer::factory()->create([
+        'event_id' => $event->id,
+        'user_id' => $org->id,
+        'commission_basis_points' => 5000,
+    ]);
+    $buyer = StubUser::create(['email' => 'buyer@x.com']);
+    $order = Order::factory()->paid()->create([
+        'event_id' => $event->id, 'user_id' => $buyer->id,
+        'total_minor' => 100_000, 'currency' => 'USD',
+    ]);
+
+    (new PayoutAccruer)->accrueFor($order);
+    $entry = PayoutLedgerEntry::query()->where('order_id', $order->id)->firstOrFail();
+    expect($entry->amount_minor)->toBe(50_000);
+
+    // Processing the refund dispatches RefundProcessed; the provider's listener
+    // reconciles the ledger to net revenue.
+    $coordinator = new RefundCoordinator(app('config'));
+    $refund = $coordinator->request($order->fresh(), $buyer, RefundReason::AttendeeRequest, null, 40_000);
+    $coordinator->markProcessed($refund, 'pi_ref');
+
+    expect($entry->fresh()->amount_minor)->toBe(30_000);
 });
