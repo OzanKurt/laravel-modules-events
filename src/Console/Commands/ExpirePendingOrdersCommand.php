@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Kurt\Modules\Events\Ticketing\Enums\OrderStatus;
 use Kurt\Modules\Events\Ticketing\Events\OrderCancelled;
 use Kurt\Modules\Events\Ticketing\Models\Order;
+use Kurt\Modules\Events\Ticketing\Models\PriceTier;
 use Kurt\Modules\Events\Ticketing\Models\TicketType;
 
 final class ExpirePendingOrdersCommand extends Command
@@ -39,6 +40,17 @@ final class ExpirePendingOrdersCommand extends Command
                         ->update([
                             'sold_count' => DB::raw('CASE WHEN sold_count >= '.$qty.' THEN sold_count - '.$qty.' ELSE 0 END'),
                         ]);
+
+                    // Release the reserved price-tier capacity too, mirroring the
+                    // per-tier increment done at reservation time.
+                    if ($item->price_tier_id !== null) {
+                        PriceTier::query()
+                            ->where('id', $item->price_tier_id)
+                            ->lockForUpdate()
+                            ->update([
+                                'sold_count' => DB::raw('CASE WHEN sold_count >= '.$qty.' THEN sold_count - '.$qty.' ELSE 0 END'),
+                            ]);
+                    }
 
                     $item->assignments()->delete();
                 }

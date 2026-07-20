@@ -6,6 +6,7 @@ namespace Kurt\Modules\Events\Providers;
 
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Auth\Access\Gate;
+use Illuminate\Support\Facades\Event as EventFacade;
 use Kurt\Modules\Core\Providers\PackageServiceProvider;
 use Kurt\Modules\Events\Attendance\Models\Application;
 use Kurt\Modules\Events\Attendance\Support\AnnouncementDispatcher;
@@ -24,9 +25,12 @@ use Kurt\Modules\Events\Console\Commands\GenerateOccurrencesCommand;
 use Kurt\Modules\Events\Console\Commands\PruneQueueCommand;
 use Kurt\Modules\Events\Console\Commands\ReleaseQueueCommand;
 use Kurt\Modules\Events\Eligibility\Engine\RequirementEngine;
+use Kurt\Modules\Events\Flow\Contracts\QueueChallengeProvider;
+use Kurt\Modules\Events\Flow\Events\RefundProcessed;
 use Kurt\Modules\Events\Flow\Models\Refund;
 use Kurt\Modules\Events\Flow\Models\SaleQueueEntry;
 use Kurt\Modules\Events\Flow\Models\WaitlistEntry;
+use Kurt\Modules\Events\Flow\Support\ActiveQueueChallengeProvider;
 use Kurt\Modules\Events\Flow\Support\AuditLogWriter;
 use Kurt\Modules\Events\Flow\Support\GdprAnonymizer;
 use Kurt\Modules\Events\Flow\Support\GdprExporter;
@@ -84,6 +88,10 @@ final class EventsServiceProvider extends PackageServiceProvider
     {
         $this->app->singleton(QrTokenSigner::class, fn () => new QrTokenSigner((string) config('app.key')));
         $this->app->singleton(RequirementEngine::class);
+
+        // Default sale-queue gate. Admits only currently-Active queue entries; a no-op for
+        // events that do not run a queue. Bound so it can be swapped for a custom challenge.
+        $this->app->bind(QueueChallengeProvider::class, ActiveQueueChallengeProvider::class);
         $this->app->scoped(QueueReleaser::class);
         $this->app->scoped(QueuePruner::class);
         $this->app->scoped(WaitlistPromoter::class);
@@ -108,6 +116,15 @@ final class EventsServiceProvider extends PackageServiceProvider
         // event domain events fire from the Support\Events facade explicitly.
         Order::observe(OrderObserver::class);
         Ticket::observe(TicketObserver::class);
+
+        // Keep organizer payouts net of refunds: when a refund is processed, re-cost the
+        // still-accrued ledger entries for its order.
+        EventFacade::listen(RefundProcessed::class, function (RefundProcessed $event): void {
+            $order = $event->refund->order()->first();
+            if ($order !== null) {
+                $this->app->make(PayoutAccruer::class)->reconcileForRefund($order);
+            }
+        });
 
         /** @var Gate $gate */
         $gate = $this->app->make(Gate::class);

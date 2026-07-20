@@ -26,10 +26,13 @@ use Kurt\Modules\Events\Catalog\Models\Event;
 use Kurt\Modules\Events\Catalog\Models\EventTemplate;
 use Kurt\Modules\Events\Catalog\Support\EventCloner;
 use Kurt\Modules\Events\Catalog\Support\TemplateManager;
+use Kurt\Modules\Events\Flow\Contracts\QueueChallengeProvider;
 use Kurt\Modules\Events\Flow\Enums\PayoutStatus;
 use Kurt\Modules\Events\Flow\Enums\QueueStatus;
 use Kurt\Modules\Events\Flow\Enums\RefundReason;
 use Kurt\Modules\Events\Flow\Enums\WaitlistStatus;
+use Kurt\Modules\Events\Flow\Exceptions\WaitlistClaimNotAllowed;
+use Kurt\Modules\Events\Flow\Models\CheckInAttempt;
 use Kurt\Modules\Events\Flow\Models\PayoutLedgerEntry;
 use Kurt\Modules\Events\Flow\Models\Refund;
 use Kurt\Modules\Events\Flow\Models\SaleQueueEntry;
@@ -47,10 +50,14 @@ use Kurt\Modules\Events\Ticketing\Events\OrderCreated;
 use Kurt\Modules\Events\Ticketing\Events\ReferralAttributionRecorded;
 use Kurt\Modules\Events\Ticketing\Events\TicketCheckedIn;
 use Kurt\Modules\Events\Ticketing\Events\TicketIssued;
+use Kurt\Modules\Events\Ticketing\Exceptions\PriceTierSoldOut;
+use Kurt\Modules\Events\Ticketing\Exceptions\TicketNotCheckInable;
 use Kurt\Modules\Events\Ticketing\Exceptions\TicketTypeSoldOut;
 use Kurt\Modules\Events\Ticketing\Models\DiscountCode;
+use Kurt\Modules\Events\Ticketing\Models\DiscountCodeUsage;
 use Kurt\Modules\Events\Ticketing\Models\Order;
 use Kurt\Modules\Events\Ticketing\Models\OrderItem;
+use Kurt\Modules\Events\Ticketing\Models\PriceTier;
 use Kurt\Modules\Events\Ticketing\Models\ReferralLink;
 use Kurt\Modules\Events\Ticketing\Models\Ticket;
 use Kurt\Modules\Events\Ticketing\Models\TicketType;
@@ -73,6 +80,7 @@ final class Events
         private readonly GdprExporter $gdprExporter,
         private readonly GdprAnonymizer $gdprAnonymizer,
         private readonly AnnouncementDispatcher $announcements,
+        private readonly QueueChallengeProvider $queueChallenge,
     ) {}
 
     // ===== Catalog =====
@@ -142,6 +150,10 @@ final class Events
         ?int $unitPriceMinorOverride = null,
     ): Order {
         return DB::transaction(function () use ($type, $buyer, $quantity, $holderAssignments, $discountCode, $unitPriceMinorOverride): Order {
+            // Sale-queue gate: when the event runs a queue, only a currently-admitted
+            // (Active, non-expired) entry may reserve. No-op for events without a queue.
+            $this->queueChallenge->verify($buyer, '', ['event_id' => $type->event_id]);
+
             /** @var TicketType $type */
             $type = TicketType::query()->lockForUpdate()->findOrFail($type->id);
 
@@ -151,6 +163,16 @@ final class Events
 
             if ($type->capacity !== null && ($type->capacity - $type->sold_count) < $quantity) {
                 throw new TicketTypeSoldOut;
+            }
+
+            // Price-tier capacity is enforced on the same locked path as the ticket-type
+            // capacity so a tier cannot be oversold under concurrent reservations.
+            $tier = $type->activePriceTier();
+            if ($tier !== null) {
+                $tier = PriceTier::query()->lockForUpdate()->findOrFail($tier->id);
+                if ($tier->capacity !== null && ($tier->capacity - $tier->sold_count) < $quantity) {
+                    throw new PriceTierSoldOut;
+                }
             }
 
             $unitPrice = $unitPriceMinorOverride ?? $type->currentUnitPriceMinor();
@@ -168,7 +190,7 @@ final class Events
             );
 
             $code = $discountCode !== null
-                ? DiscountCode::query()->where('code', $discountCode)->first()
+                ? DiscountCode::query()->where('code', $discountCode)->lockForUpdate()->first()
                 : null;
 
             $breakdown = $this->prices->apply($draft, $code);
@@ -188,7 +210,7 @@ final class Events
             /** @var OrderItem $orderItem */
             $orderItem = $order->items()->create([
                 'ticket_type_id' => $type->id,
-                'price_tier_id' => $type->activePriceTier()?->id,
+                'price_tier_id' => $tier?->id,
                 'quantity' => $quantity,
                 'unit_price_minor' => $unitPrice,
                 'line_total_minor' => $unitPrice * $quantity,
@@ -209,6 +231,25 @@ final class Events
             // solely by TicketObserver when tickets are created/cancelled, so it is
             // deliberately not incremented here at reservation time.
             $type->increment('sold_count', $quantity);
+
+            if ($tier !== null) {
+                $tier->increment('sold_count', $quantity);
+            }
+
+            // Record discount usage inside the reservation transaction so the per-user
+            // and total usage limits (DiscountCode::isActive / usedByUserCount) actually
+            // gate subsequent reservations. The code row is locked above, so a concurrent
+            // reservation blocks until this commits and then sees the updated uses_count.
+            if ($code !== null) {
+                DiscountCodeUsage::create([
+                    'discount_code_id' => $code->id,
+                    'order_id' => $order->id,
+                    'user_id' => $buyer->getKey(),
+                    'applied_minor' => $breakdown->discountMinor,
+                    'currency' => $breakdown->currency,
+                ]);
+                $code->increment('uses_count');
+            }
 
             OrderCreated::dispatch($order);
 
@@ -256,14 +297,54 @@ final class Events
 
     public function checkIn(Ticket $ticket, Model $scanner): Ticket
     {
-        $ticket->forceFill([
-            'status' => TicketStatus::CheckedIn,
-            'checked_in_at' => now(),
-            'checked_in_by' => $scanner->getKey(),
-        ])->save();
-        TicketCheckedIn::dispatch($ticket, $scanner);
+        $failureStatus = null;
 
-        return $ticket;
+        // The transaction commits in both branches: a rejected attempt must still leave a
+        // persisted (failed) CheckInAttempt, so the rejection is signalled via a flag and
+        // thrown after commit rather than rolling the record back.
+        $result = DB::transaction(function () use ($ticket, $scanner, &$failureStatus): Ticket {
+            /** @var Ticket $locked */
+            $locked = Ticket::query()->lockForUpdate()->findOrFail($ticket->id);
+
+            // Replay guard: a ticket can be admitted exactly once. Anything other than an
+            // Issued ticket (already checked in, refunded, cancelled, transferred) is a
+            // rejected attempt and is recorded as a failed, single-use CheckInAttempt.
+            if ($locked->status !== TicketStatus::Issued) {
+                $failureStatus = $locked->status->value;
+                CheckInAttempt::create([
+                    'ticket_id' => $locked->id,
+                    'scanner_user_id' => $scanner->getKey(),
+                    'succeeded' => false,
+                    'failure_reason' => 'ticket_status:'.$locked->status->value,
+                    'occurred_at' => now(),
+                ]);
+
+                return $locked;
+            }
+
+            $locked->forceFill([
+                'status' => TicketStatus::CheckedIn,
+                'checked_in_at' => now(),
+                'checked_in_by' => $scanner->getKey(),
+            ])->save();
+
+            CheckInAttempt::create([
+                'ticket_id' => $locked->id,
+                'scanner_user_id' => $scanner->getKey(),
+                'succeeded' => true,
+                'occurred_at' => now(),
+            ]);
+
+            TicketCheckedIn::dispatch($locked, $scanner);
+
+            return $locked;
+        });
+
+        if ($failureStatus !== null) {
+            throw new TicketNotCheckInable('Ticket is not in an issuable state: '.$failureStatus);
+        }
+
+        return $result;
     }
 
     public function checkInByToken(string $qrToken, Model $scanner): Ticket
@@ -381,15 +462,29 @@ final class Events
 
     public function claimWaitlist(WaitlistEntry $entry): Order
     {
-        $entry->forceFill(['status' => WaitlistStatus::Claimed])->save();
-        $user = $entry->user()->firstOrFail();
-        $type = $entry->ticketType()->firstOrFail();
+        return DB::transaction(function () use ($entry): Order {
+            /** @var WaitlistEntry $locked */
+            $locked = WaitlistEntry::query()->lockForUpdate()->findOrFail($entry->id);
 
-        return $this->reserve($type, $user, $entry->quantity, array_fill(0, $entry->quantity, [
-            'name' => (string) ($user->getAttribute('name') ?? 'Waitlist Claimant'),
-            'email' => (string) ($user->getAttribute('email') ?? ''),
-            'user_id' => $user->getKey(),
-        ]));
+            // Only a live offer may be claimed. Re-claiming an already-Claimed entry, a
+            // Waiting entry that was never offered, or an offer whose window elapsed must
+            // not reserve. The row is locked so concurrent claims cannot both proceed.
+            if ($locked->status !== WaitlistStatus::Offered
+                || $locked->claim_expires_at === null
+                || $locked->claim_expires_at->lessThanOrEqualTo(now())) {
+                throw new WaitlistClaimNotAllowed('Waitlist entry is not claimable.');
+            }
+
+            $locked->forceFill(['status' => WaitlistStatus::Claimed])->save();
+            $user = $locked->user()->firstOrFail();
+            $type = $locked->ticketType()->firstOrFail();
+
+            return $this->reserve($type, $user, $locked->quantity, array_fill(0, $locked->quantity, [
+                'name' => (string) ($user->getAttribute('name') ?? 'Waitlist Claimant'),
+                'email' => (string) ($user->getAttribute('email') ?? ''),
+                'user_id' => $user->getKey(),
+            ]));
+        });
     }
 
     // ===== Cloning + templates =====
@@ -429,13 +524,31 @@ final class Events
 
     public function attributeReferral(Order $order, string $code): void
     {
-        $link = ReferralLink::query()->where('code', $code)->where('active', true)->first();
-        if ($link === null) {
-            return;
-        }
-        $order->forceFill(['referral_link_id' => $link->id])->save();
-        $link->increment('uses_count');
-        ReferralAttributionRecorded::dispatch($order, $link);
+        DB::transaction(function () use ($order, $code): void {
+            $link = ReferralLink::query()
+                ->where('code', $code)
+                ->where('active', true)
+                ->lockForUpdate()
+                ->first();
+
+            if ($link === null) {
+                return;
+            }
+
+            // Enforce the redemption cap: an exhausted link (or an expired one) must not
+            // attribute further orders. The row is locked so concurrent attributions
+            // cannot push uses_count past max_uses.
+            if ($link->max_uses !== null && $link->uses_count >= $link->max_uses) {
+                return;
+            }
+            if ($link->expires_at !== null && $link->expires_at->lessThanOrEqualTo(now())) {
+                return;
+            }
+
+            $order->forceFill(['referral_link_id' => $link->id])->save();
+            $link->increment('uses_count');
+            ReferralAttributionRecorded::dispatch($order, $link);
+        });
     }
 
     // ===== Announcements =====

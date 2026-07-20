@@ -23,4 +23,18 @@ final class QueuePruner
             ->where('last_heartbeat_at', '<', $cutoff)
             ->update(['status' => QueueStatus::Abandoned->value]);
     }
+
+    /**
+     * Expire Active admissions whose window has elapsed so their slot is freed for the
+     * next waiting entry and the sale-queue gate stops admitting them to reserve.
+     */
+    public function expireStaleActiveFor(Event $event): int
+    {
+        return SaleQueueEntry::query()
+            ->where('event_id', $event->id)
+            ->where('status', QueueStatus::Active->value)
+            ->whereNotNull('expires_at')
+            ->where('expires_at', '<', now())
+            ->update(['status' => QueueStatus::Expired->value]);
+    }
 }
