@@ -7,6 +7,7 @@ namespace Kurt\Modules\Events\Providers;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Auth\Access\Gate;
 use Illuminate\Support\Facades\Event as EventFacade;
+use Kurt\Modules\Core\Modules\ModuleManifest;
 use Kurt\Modules\Core\Providers\PackageServiceProvider;
 use Kurt\Modules\Events\Attendance\Models\Application;
 use Kurt\Modules\Events\Attendance\Support\AnnouncementDispatcher;
@@ -63,6 +64,13 @@ final class EventsServiceProvider extends PackageServiceProvider
         return 'events';
     }
 
+    protected function moduleManifest(): ?ModuleManifest
+    {
+        return ModuleManifest::make('events')
+            ->name('Events')
+            ->description('Payment-agnostic event management for Laravel: events, tickets, applications, queue, waitlist, refunds, transfers, requirements, sponsors, announcements.');
+    }
+
     public function configurePackage(Package $package): void
     {
         $package
@@ -112,6 +120,8 @@ final class EventsServiceProvider extends PackageServiceProvider
 
     public function packageBooted(): void
     {
+        parent::packageBooted();
+
         // Observers: only register what exists in v1. EventObserver is not implemented;
         // event domain events fire from the Support\Events facade explicitly.
         Order::observe(OrderObserver::class);
