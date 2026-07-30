@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kurt\Modules\Events\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Kurt\Modules\Events\Ticketing\Enums\OrderStatus;
 use Kurt\Modules\Events\Ticketing\Events\OrderCancelled;
@@ -34,22 +36,19 @@ final class ExpirePendingOrdersCommand extends Command
             DB::transaction(function () use ($order): void {
                 foreach ($order->items as $item) {
                     $qty = (int) $item->quantity;
-                    TicketType::query()
-                        ->where('id', $item->ticket_type_id)
-                        ->lockForUpdate()
-                        ->update([
-                            'sold_count' => DB::raw('CASE WHEN sold_count >= '.$qty.' THEN sold_count - '.$qty.' ELSE 0 END'),
-                        ]);
+
+                    $this->releaseSoldCount(
+                        TicketType::query()->where('id', $item->ticket_type_id),
+                        $qty,
+                    );
 
                     // Release the reserved price-tier capacity too, mirroring the
                     // per-tier increment done at reservation time.
                     if ($item->price_tier_id !== null) {
-                        PriceTier::query()
-                            ->where('id', $item->price_tier_id)
-                            ->lockForUpdate()
-                            ->update([
-                                'sold_count' => DB::raw('CASE WHEN sold_count >= '.$qty.' THEN sold_count - '.$qty.' ELSE 0 END'),
-                            ]);
+                        $this->releaseSoldCount(
+                            PriceTier::query()->where('id', $item->price_tier_id),
+                            $qty,
+                        );
                     }
 
                     $item->assignments()->delete();
@@ -64,5 +63,22 @@ final class ExpirePendingOrdersCommand extends Command
         $this->info("Cancelled {$count} pending order(s).");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Give back $qty of reserved capacity without ever dropping below zero.
+     *
+     * Both statements are set-based, so the clamp stays atomic per row. Order
+     * matters: rows that hold less than $qty are floored to zero first, which
+     * leaves only rows that can absorb the full decrement for the second
+     * statement. Doing it the other way round would re-clamp rows that were
+     * just legitimately decremented below $qty.
+     *
+     * @param  Builder<covariant Model>  $query
+     */
+    private function releaseSoldCount(Builder $query, int $qty): void
+    {
+        (clone $query)->where('sold_count', '<', $qty)->update(['sold_count' => 0]);
+        (clone $query)->where('sold_count', '>=', $qty)->decrement('sold_count', $qty);
     }
 }

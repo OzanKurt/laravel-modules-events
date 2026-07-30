@@ -5,7 +5,7 @@ Payment-agnostic event management module for Laravel: events, tickets, applicati
 ## Requirements
 
 - PHP 8.4+
-- Laravel 12.x
+- Laravel 13.x
 - `ozankurt/laravel-modules-core` v2.x
 
 ## Installation

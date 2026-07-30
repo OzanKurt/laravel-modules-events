@@ -64,7 +64,7 @@ final class EventsServiceProvider extends PackageServiceProvider
         return 'events';
     }
 
-    protected function moduleManifest(): ?ModuleManifest
+    protected function moduleManifest(): ModuleManifest
     {
         return ModuleManifest::make('events')
             ->name('Events')
