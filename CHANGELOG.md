@@ -4,6 +4,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING** — requires Laravel 13, PHP 8.4 and `ozankurt/laravel-modules-core` `^2.0`. Laravel 12 and PHP 8.3 are no longer supported. `cviebrock/eloquent-sluggable` moves to `^12.0 || ^13.0` and `spatie/laravel-package-tools` to `^1.93`, the first releases that resolve against Laravel 13. The test suite moves to Pest 5 / Testbench 11, and CI now runs PHP 8.4 + Laravel 13 against Filament 3, 4 and 5.
+- `events:expire-pending-orders` now releases reserved capacity with two set-based statements (floor-to-zero, then decrement) instead of an interpolated `DB::raw('CASE WHEN … END')` expression. Laravel 13 narrowed `Connection::raw()` to `float|int|literal-string`; the new form also keeps the quantity out of the SQL string. The clamp-at-zero behaviour is unchanged.
+- `EventsServiceProvider::moduleManifest()` narrows its return type from `?ModuleManifest` to `ModuleManifest`, matching what it actually returns.
+
 ## [1.1.0] - 2026-05-30
 
 ### Added
