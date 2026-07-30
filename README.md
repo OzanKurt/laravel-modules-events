@@ -74,7 +74,7 @@ Filament plugin dependency required.
 ## API
 
 The package ships an out-of-the-box REST API built on the Core **API kit**
-(`ozankurt/laravel-modules-core` ^2.2). It is **safe by default**: in the
+(`ozankurt/laravel-modules-core` ^2.0). It is **safe by default**: in the
 default `headless` mode nothing is registered. Opt in per environment:
 
 ```dotenv
