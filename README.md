@@ -1,11 +1,13 @@
 # laravel-modules-events
 
+[![tests](https://github.com/OzanKurt/laravel-modules-events/actions/workflows/tests.yml/badge.svg)](https://github.com/OzanKurt/laravel-modules-events/actions/workflows/tests.yml)
+
 Payment-agnostic event management module for Laravel: events, tickets, applications, sale queue, waitlist, refunds, transfers, dynamic requirements, sponsors, announcements, audit log, templates, GDPR helpers.
 
 ## Requirements
 
-- PHP 8.4+
-- Laravel 13.x
+- PHP `^8.4`
+- Laravel `^13.0`
 - `ozankurt/laravel-modules-core` v2.x
 
 ## Installation
@@ -148,6 +150,19 @@ identically through the API:
 - **check-in** goes through `checkIn()`, so the domain's replay protection
   applies — a ticket already checked in (or otherwise not issuable) returns
   `409`.
+
+## Testing
+
+```bash
+composer install
+vendor/bin/pint --test
+vendor/bin/phpstan analyse --memory-limit=2G
+vendor/bin/pest
+```
+
+CI runs the same checks on every push and pull request
+(`.github/workflows/tests.yml`), against PHP 8.4 / Laravel 13. Static analysis
+is held at **PHPStan level 8**; the suite runs on **Pest 5**.
 
 ## License
 
